@@ -1,0 +1,87 @@
+name: Pulumi ESC demo
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# id-token: write lets GitHub mint an OIDC token that Pulumi Cloud exchanges
+# for a short-lived access token, so no long-lived PULUMI_ACCESS_TOKEN is stored.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PULUMI_ORG: demo
+  PULUMI_PROJECT: demo-fundamentals
+  PULUMI_STACK: dev
+  ESC_ENVIRONMENT: demo/demo-fundamentals/dev
+
+jobs:
+  esc-values:
+    name: Show values injected by ESC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate with Pulumi Cloud (OIDC)
+        uses: pulumi/auth-actions@v1
+        with:
+          organization: ${{ env.PULUMI_ORG }}
+          requested-token-type: urn:pulumi:token-type:access_token:organization
+
+      # Opens the ESC environment and exports values.environmentVariables
+      # into the job. Secret values are masked in the logs.
+      - name: Inject ESC environment variables
+        uses: pulumi/esc-action@v3
+        with:
+          environment: ${{ env.ESC_ENVIRONMENT }}
+
+      - name: Use injected variables
+        run: |
+          echo "APP_NAME=$APP_NAME"
+          echo "APP_ENVIRONMENT=$APP_ENVIRONMENT"
+
+      # The imported cloud-access/aws-oidc environment exchanged Pulumi's OIDC token
+      # for short-lived AWS credentials, which esc-action exported above.
+      - name: Verify AWS identity obtained via OIDC
+        run: aws sts get-caller-identity
+
+  pulumi:
+    name: Pulumi ${{ github.event_name == 'pull_request' && 'preview' || 'up' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Authenticate with Pulumi Cloud (OIDC)
+        uses: pulumi/auth-actions@v1
+        with:
+          organization: ${{ env.PULUMI_ORG }}
+          requested-token-type: urn:pulumi:token-type:access_token:organization
+
+      # The ESC environment is attached to the stack via Pulumi.dev.yaml,
+      # so config and secrets are resolved automatically at run time.
+      - name: Pulumi preview (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: ${{ env.PULUMI_ORG }}/${{ env.PULUMI_PROJECT }}/${{ env.PULUMI_STACK }}
+          comment-on-pr: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pulumi up (main / manual)
+        if: github.event_name != 'pull_request'
+        uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: ${{ env.PULUMI_ORG }}/${{ env.PULUMI_PROJECT }}/${{ env.PULUMI_STACK }}
